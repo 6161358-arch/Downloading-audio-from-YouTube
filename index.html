@@ -231,52 +231,95 @@
             btnContent.innerHTML = `<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>מעבד... נא להמתין בסבלנות`;
             showToast("התהליך החל. אנא המתן עד לקבלת הודעת סיום (אל תסגור את החלון).", 0);
 
-            // הוספת משתנה email לכתובת ה-webhook
-            const webhookUrl = `https://n8n.srv1256019.hstgr.cloud/webhook/31876b0c-e6c9-4f2b-b4df-fe2313428462?url=${encodeURIComponent(urlValue)}&email=${encodeURIComponent(emailValue)}`;
+            // --- שיטה חדשה: השרת עונה מיד, העמוד בודק סטטוס, וההורדה נעשית ישירות בדפדפן ---
+            const apiBase = 'https://n8n.srv1256019.hstgr.cloud/webhook';
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const spinnerSvg = btnContent.querySelector('svg') ? btnContent.querySelector('svg').outerHTML : '';
+            const setBtnText = (text) => { btnContent.innerHTML = spinnerSvg + text; };
+
+            // מסיר קישור הורדה ישן אם נשאר מהפעם הקודמת
+            const oldReady = document.getElementById('downloadReady');
+            if (oldReady) oldReady.remove();
 
             try {
-                const response = await fetch(webhookUrl);
+                // שלב 1: פתיחת משימה - השרת עונה מיד עם מספר משימה
+                const startRes = await fetch(`${apiBase}/yt-audio-start?url=${encodeURIComponent(urlValue)}&email=${encodeURIComponent(emailValue)}`);
+                if (!startRes.ok) throw new Error('שגיאת שרת או CORS');
+                const job = await startRes.json();
+                if (!job.jobId || job.status === 'error') {
+                    const badLink = new Error(job.error || 'הבקשה נדחתה');
+                    badLink.userMessage = job.error || '';
+                    throw badLink;
+                }
 
-                if (!response.ok) throw new Error('שגיאת שרת או CORS');
-                const contentType = response.headers.get('Content-Type') || '';
-                const blob = await response.blob();
+                // שלב 2: בדיקת סטטוס כל 5 שניות (עד 40 דקות)
+                const startedAt = Date.now();
+                const maxWaitMs = 40 * 60 * 1000;
+                let failedChecks = 0;
+                let ready = null;
 
-                const isAudio = contentType.includes('audio') || contentType.includes('octet-stream');
-                const isTooSmall = blob.size < 20000; 
+                while (Date.now() - startedAt < maxWaitMs) {
+                    await sleep(5000);
 
-                if (!isAudio || isTooSmall) {
-                    let errorDetail = '';
+                    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+                    const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+                    const ss = String(elapsed % 60).padStart(2, '0');
+                    setBtnText(`מוריד מיוטיוב... ${mm}:${ss}`);
+
+                    let statusData;
                     try {
-                        const text = await blob.text();
-                        const parsed = JSON.parse(text);
-                        errorDetail = parsed.error ? ` (${parsed.error})` : '';
-                    } catch (_) { /* לא JSON, מתעלמים */ }
-                    throw new Error('קובץ לא תקין התקבל מהשרת' + errorDetail);
+                        const statusRes = await fetch(`${apiBase}/yt-audio-status?job=${encodeURIComponent(job.jobId)}&t=${Date.now()}`, { cache: 'no-store' });
+                        if (!statusRes.ok) throw new Error('status');
+                        statusData = await statusRes.json();
+                        failedChecks = 0;
+                    } catch (_) {
+                        // ניתוק רגעי - ממשיכים לנסות (עד דקה ברצף)
+                        failedChecks++;
+                        if (failedChecks >= 12) throw new Error('אבד הקשר עם השרת');
+                        continue;
+                    }
+
+                    if (statusData.status === 'done') { ready = statusData; break; }
+                    if (statusData.status !== 'processing') throw new Error(statusData.error || 'ההורדה נכשלה בשרת');
                 }
 
-                let fileName = "audio_file.mp3";
-                const disposition = response.headers.get('Content-Disposition');
-                if (disposition && disposition.includes('filename*=')) {
-                    fileName = decodeURIComponent(disposition.split("UTF-8''")[1]);
-                }
+                if (!ready) throw new Error('הזמן הקצוב עבר');
 
-                const downloadUrl = window.URL.createObjectURL(blob);
+                // שלב 3: הורדה ישירה - הדפדפן מציג אותה בסרגל ההורדות עם אחוזים
+                const fileUrl = `${apiBase}/yt-audio-file?job=${encodeURIComponent(job.jobId)}`;
+
+                const readyBox = document.createElement('div');
+                readyBox.id = 'downloadReady';
+                readyBox.className = 'mt-6 p-4 rounded-xl bg-primary-50 border border-primary-200 text-center';
+                const readyText = document.createElement('p');
+                readyText.className = 'text-sm text-slate-700 mb-3';
+                readyText.textContent = 'הקובץ מוכן: ' + (ready.fileName || 'קובץ שמע') + ' (זמין להורדה במשך 30 דקות)';
+                const readyLink = document.createElement('a');
+                readyLink.href = fileUrl;
+                readyLink.className = 'inline-block bg-primary-600 hover:bg-primary-700 text-white font-medium rounded-xl px-6 py-3 transition-colors';
+                readyLink.textContent = 'הורד את הקובץ';
+                readyBox.appendChild(readyText);
+                readyBox.appendChild(readyLink);
+                form.insertAdjacentElement('afterend', readyBox);
+
+                // מנסה להתחיל את ההורדה אוטומטית; אם הדפדפן חוסם - הכפתור למעלה נשאר זמין
                 const a = document.createElement('a');
                 a.style.display = 'none';
-                a.href = downloadUrl;
-                a.download = fileName;
+                a.href = fileUrl;
                 document.body.appendChild(a);
                 a.click();
-
-                window.URL.revokeObjectURL(downloadUrl);
                 document.body.removeChild(a);
 
-                showToast("הקובץ ירד בהצלחה ונשמר במחשב!", 5000);
+                showToast("הקובץ מוכן! ההורדה מתחילה - אפשר לעקוב אחריה בסרגל ההורדות של הדפדפן.", 8000);
                 urlInput.value = '';
 
             } catch (error) {
                 console.error("שגיאה:", error);
-                showToast("ההורדה נכשלה. ייתכן שהעוגיות פגו - נסה לעדכן אותן בקטע שלמטה.", 6000, 'error');
+                if (error.userMessage) {
+                    showToast(error.userMessage, 6000, 'error');
+                } else {
+                    showToast("ההורדה נכשלה. ייתכן שהעוגיות פגו - נסה לעדכן אותן בקטע שלמטה.", 6000, 'error');
+                }
             } finally {
                 urlInput.disabled = false;
                 emailInput.disabled = false; // הפעלת שדה האימייל מחדש
@@ -328,6 +371,4 @@
     </script>
 </body>
 </html>
-<!-- Injection By NetFree -->
-<script src="//netfree.link/injection-script/go-payment.js" type="text/javascript" async ></script>
-<script src="//netfree.link/injection-script/popup-card-init.js" type="text/javascript" async ></script>
+
