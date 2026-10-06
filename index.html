@@ -250,16 +250,59 @@
             const total = links.length;
             const counter = (i) => total > 1 ? `(${i + 1}/${total}) ` : '';
 
+            // יוצר שגיאה עם הודעה שמוצגת למשתמש
+            const fail = (userMessage, raw) => {
+                const err = new Error(raw || userMessage);
+                err.userMessage = userMessage;
+                return err;
+            };
+
+            // מתרגם את השגיאה האמיתית שחזרה מהשרת להודעה ברורה בעברית
+            function explainError(raw) {
+                const text = String(raw || '');
+                const t = text.toLowerCase();
+                if (t.includes('private video') || t.includes('members-only') || t.includes('join this channel'))
+                    return 'הסרטון פרטי או לחברי ערוץ בלבד.';
+                if (t.includes('confirm your age') || t.includes('age-restricted') || t.includes('inappropriate for some users'))
+                    return 'הסרטון מוגבל גיל - יוטיוב לא מאפשר להוריד אותו.';
+                if (t.includes('not a bot') || t.includes('sign in to confirm') || t.includes('cookies') || t.includes('login required'))
+                    return 'העוגיות פגו - יוטיוב דורש התחברות. יש לעדכן עוגיות בקטע שלמטה.';
+                if (t.includes('video unavailable') || t.includes('has been removed') || t.includes('does not exist') || t.includes('account associated with this video has been terminated'))
+                    return 'הסרטון לא זמין - נמחק, נחסם או שהקישור שגוי.';
+                if (t.includes('not available in your country') || t.includes('blocked it in your country') || t.includes('geo'))
+                    return 'הסרטון חסום לצפייה במדינה של השרת.';
+                if (t.includes('live event will begin') || t.includes('premieres in') || t.includes('is live') || t.includes('live stream'))
+                    return 'זה שידור חי או שידור שעוד לא התחיל - אי אפשר להוריד אותו כרגע.';
+                if (t.includes('copyright'))
+                    return 'הסרטון הוסר בגלל זכויות יוצרים.';
+                if (t.includes('too many requests') || t.includes('429') || t.includes('rate limit'))
+                    return 'יוטיוב חוסם זמנית בגלל יותר מדי בקשות - נסה שוב בעוד כמה דקות.';
+                if (t.includes('timeout') || t.includes('timed out') || t.includes('etimedout') || t.includes('aborted'))
+                    return 'ההורדה בשרת לקחה יותר מדי זמן ונעצרה - הסרטון ארוך מאוד או שהשרת עמוס.';
+                if (t.includes('econnrefused') || t.includes('enotfound') || t.includes('socket hang up') || t.includes('502') || t.includes('503'))
+                    return 'שרת ההורדות לא זמין כרגע - נסה שוב בעוד כמה דקות.';
+                if (t.includes('no space left') || t.includes('enospc'))
+                    return 'נגמר המקום בדיסק של השרת.';
+                if (t.includes('unsupported url') || t.includes('is not a valid url'))
+                    return 'הקישור לא נתמך - צריך קישור לסרטון יוטיוב.';
+                // שגיאה לא מוכרת - מציג את תחילת ההודעה המקורית כדי שאפשר יהיה להבין מה קרה
+                const short = text.replace(/\\+["n]?/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+                return 'ההורדה נכשלה בשרת' + (short ? ': ' + short : '.');
+            }
+
             // מטפל בקישור אחד: פותח משימה, מחכה שתהיה מוכנה, ומחזיר את פרטי הקובץ
             async function processLink(link, index) {
                 // שלב 1: פתיחת משימה - השרת עונה מיד עם מספר משימה
-                const startRes = await fetch(`${apiBase}/yt-audio-start?url=${encodeURIComponent(link)}&email=${encodeURIComponent(emailValue)}`);
-                if (!startRes.ok) throw new Error('שגיאת שרת או CORS');
+                let startRes;
+                try {
+                    startRes = await fetch(`${apiBase}/yt-audio-start?url=${encodeURIComponent(link)}&email=${encodeURIComponent(emailValue)}`);
+                } catch (netErr) {
+                    throw fail('אין חיבור לשרת - בדוק את חיבור האינטרנט ונסה שוב.', String(netErr));
+                }
+                if (!startRes.ok) throw fail(`השרת לא זמין כרגע (שגיאה ${startRes.status}) - נסה שוב בעוד כמה דקות.`);
                 const job = await startRes.json();
                 if (!job.jobId || job.status === 'error') {
-                    const badLink = new Error(job.error || 'הבקשה נדחתה');
-                    badLink.userMessage = job.error || '';
-                    throw badLink;
+                    throw fail(job.error || 'השרת דחה את הבקשה.');
                 }
 
                 // שלב 2: בדיקת סטטוס כל 5 שניות (עד 40 דקות)
@@ -284,7 +327,7 @@
                     } catch (_) {
                         // ניתוק רגעי - ממשיכים לנסות (עד דקה ברצף)
                         failedChecks++;
-                        if (failedChecks >= 12) throw new Error('אבד הקשר עם השרת');
+                        if (failedChecks >= 12) throw fail('אבד הקשר עם השרת למשך דקה - בדוק את חיבור האינטרנט.');
                         continue;
                     }
 
@@ -294,10 +337,11 @@
                             fileUrl: `${apiBase}/yt-audio-file?job=${encodeURIComponent(job.jobId)}`
                         };
                     }
-                    if (statusData.status !== 'processing') throw new Error(statusData.error || 'ההורדה נכשלה בשרת');
+                    if (statusData.status === 'error') throw fail(explainError(statusData.error), statusData.error);
+                    if (statusData.status !== 'processing') throw fail('המשימה לא נמצאה בשרת - נסה לשלוח שוב.');
                 }
 
-                throw new Error('הזמן הקצוב עבר');
+                throw fail('ההורדה לא הסתיימה תוך 40 דקות - הסרטון ארוך מדי או שהשרת עמוס.');
             }
 
             // תיבת תוצאות - שורה לכל קישור
@@ -331,6 +375,7 @@
 
             let okCount = 0;
             const failedLinks = [];
+            let lastFailMessage = '';
 
             try {
                 for (let i = 0; i < total; i++) {
@@ -365,8 +410,12 @@
                     } catch (error) {
                         console.error("שגיאה:", links[i], error);
                         failedLinks.push(links[i]);
-                        state.textContent = error.userMessage || 'נכשל';
-                        state.className = 'shrink-0 text-rose-600 font-medium';
+                        lastFailMessage = error.userMessage || 'ההורדה נכשלה מסיבה לא ידועה.';
+                        // הסיבה מוצגת בשורה משלה מתחת לקישור
+                        row.className = 'py-2 border-t border-primary-100 text-sm';
+                        name.className = 'block text-slate-700 truncate';
+                        state.textContent = lastFailMessage;
+                        state.className = 'block mt-1 text-rose-600 font-medium';
                     }
                 }
 
@@ -377,8 +426,10 @@
                         : "הקובץ מוכן! ההורדה מתחילה - אפשר לעקוב אחריה בסרגל ההורדות של הדפדפן.", 8000);
                 } else if (okCount > 0) {
                     showToast(`${okCount} קבצים ירדו, ${failedLinks.length} נכשלו. הקישורים שנכשלו נשארו בתיבה לניסיון חוזר.`, 9000, 'error');
+                } else if (total === 1) {
+                    showToast(lastFailMessage, 9000, 'error');
                 } else {
-                    showToast("ההורדה נכשלה. ייתכן שהעוגיות פגו - נסה לעדכן אותן בקטע שלמטה.", 7000, 'error');
+                    showToast(`כל ${total} הקישורים נכשלו. הסיבה מופיעה ליד כל קישור.`, 9000, 'error');
                 }
 
                 // משאיר בתיבה רק את הקישורים שנכשלו
