@@ -109,15 +109,14 @@
                 </div>
 
                 <div class="input-transition group">
-                    <label for="urlInput" class="block text-sm font-medium text-slate-600 mb-1.5 ml-1 transition-colors group-focus-within:text-primary-600">קישור לסרטון <span class="text-rose-500">*</span></label>
+                    <label for="urlInput" class="block text-sm font-medium text-slate-600 mb-1.5 ml-1 transition-colors group-focus-within:text-primary-600">קישור לסרטון - אפשר כמה, כל קישור בשורה נפרדת <span class="text-rose-500">*</span></label>
                     <div class="relative">
-                        <div class="absolute inset-y-0 right-0 flex items-center pr-4 pointer-events-none text-slate-400 group-focus-within:text-primary-500 transition-colors">
+                        <div class="absolute top-4 right-0 flex items-start pr-4 pointer-events-none text-slate-400 group-focus-within:text-primary-500 transition-colors">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
                             </svg>
                         </div>
-                        <input type="url" id="urlInput" required placeholder="https://www.youtube.com/watch?v=..."
-                            class="w-full bg-slate-50 border border-slate-200 rounded-xl pr-11 pl-4 py-3.5 text-slate-800 focus:bg-white focus:outline-none focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 transition-all shadow-sm text-left disabled:opacity-50 disabled:cursor-not-allowed" dir="ltr">
+                        <textarea id="urlInput" required rows="3" placeholder="https://www.youtube.com/watch?v=..." class="w-full bg-slate-50 border border-slate-200 rounded-xl pr-11 pl-4 py-3.5 text-slate-800 focus:bg-white focus:outline-none focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 transition-all shadow-sm text-left disabled:opacity-50 disabled:cursor-not-allowed resize-y" dir="ltr"></textarea>
                     </div>
                 </div>
 
@@ -220,9 +219,21 @@
         form.addEventListener('submit', async function(e) {
             e.preventDefault();
 
-            const urlValue = urlInput.value;
             const emailValue = emailInput.value; // משיכת ערך האימייל
             const originalBtnContent = btnContent.innerHTML;
+
+            // מפרק את מה שהודבק לרשימת קישורים (כל קישור בשורה נפרדת; כפילויות מוסרות)
+            const MAX_LINKS = 20;
+            const links = [...new Set(urlInput.value.split(/[\s,]+/).map(s => s.trim()).filter(Boolean))];
+
+            if (links.length === 0) {
+                showToast("יש להדביק לפחות קישור אחד.", 4000, 'error');
+                return;
+            }
+            if (links.length > MAX_LINKS) {
+                showToast(`אפשר לשלוח עד ${MAX_LINKS} קישורים בבת אחת (הודבקו ${links.length}).`, 6000, 'error');
+                return;
+            }
 
             urlInput.disabled = true;
             emailInput.disabled = true; // נטרול שדה האימייל בזמן השליחה
@@ -231,19 +242,18 @@
             btnContent.innerHTML = `<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>מעבד... נא להמתין בסבלנות`;
             showToast("התהליך החל. אנא המתן עד לקבלת הודעת סיום (אל תסגור את החלון).", 0);
 
-            // --- שיטה חדשה: השרת עונה מיד, העמוד בודק סטטוס, וההורדה נעשית ישירות בדפדפן ---
+            // --- השרת עונה מיד, העמוד בודק סטטוס, וההורדה נעשית ישירות בדפדפן ---
             const apiBase = 'https://n8n.srv1256019.hstgr.cloud/webhook';
             const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
             const spinnerSvg = btnContent.querySelector('svg') ? btnContent.querySelector('svg').outerHTML : '';
             const setBtnText = (text) => { btnContent.innerHTML = spinnerSvg + text; };
+            const total = links.length;
+            const counter = (i) => total > 1 ? `(${i + 1}/${total}) ` : '';
 
-            // מסיר קישור הורדה ישן אם נשאר מהפעם הקודמת
-            const oldReady = document.getElementById('downloadReady');
-            if (oldReady) oldReady.remove();
-
-            try {
+            // מטפל בקישור אחד: פותח משימה, מחכה שתהיה מוכנה, ומחזיר את פרטי הקובץ
+            async function processLink(link, index) {
                 // שלב 1: פתיחת משימה - השרת עונה מיד עם מספר משימה
-                const startRes = await fetch(`${apiBase}/yt-audio-start?url=${encodeURIComponent(urlValue)}&email=${encodeURIComponent(emailValue)}`);
+                const startRes = await fetch(`${apiBase}/yt-audio-start?url=${encodeURIComponent(link)}&email=${encodeURIComponent(emailValue)}`);
                 if (!startRes.ok) throw new Error('שגיאת שרת או CORS');
                 const job = await startRes.json();
                 if (!job.jobId || job.status === 'error') {
@@ -256,7 +266,6 @@
                 const startedAt = Date.now();
                 const maxWaitMs = 40 * 60 * 1000;
                 let failedChecks = 0;
-                let ready = null;
 
                 while (Date.now() - startedAt < maxWaitMs) {
                     await sleep(5000);
@@ -264,7 +273,7 @@
                     const elapsed = Math.floor((Date.now() - startedAt) / 1000);
                     const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
                     const ss = String(elapsed % 60).padStart(2, '0');
-                    setBtnText(`מוריד מיוטיוב... ${mm}:${ss}`);
+                    setBtnText(`${counter(index)}מוריד מיוטיוב... ${mm}:${ss}`);
 
                     let statusData;
                     try {
@@ -279,47 +288,102 @@
                         continue;
                     }
 
-                    if (statusData.status === 'done') { ready = statusData; break; }
+                    if (statusData.status === 'done') {
+                        return {
+                            fileName: statusData.fileName || 'קובץ שמע',
+                            fileUrl: `${apiBase}/yt-audio-file?job=${encodeURIComponent(job.jobId)}`
+                        };
+                    }
                     if (statusData.status !== 'processing') throw new Error(statusData.error || 'ההורדה נכשלה בשרת');
                 }
 
-                if (!ready) throw new Error('הזמן הקצוב עבר');
+                throw new Error('הזמן הקצוב עבר');
+            }
 
-                // שלב 3: הורדה ישירה - הדפדפן מציג אותה בסרגל ההורדות עם אחוזים
-                const fileUrl = `${apiBase}/yt-audio-file?job=${encodeURIComponent(job.jobId)}`;
+            // תיבת תוצאות - שורה לכל קישור
+            const oldReady = document.getElementById('downloadReady');
+            if (oldReady) oldReady.remove();
 
-                const readyBox = document.createElement('div');
-                readyBox.id = 'downloadReady';
-                readyBox.className = 'mt-6 p-4 rounded-xl bg-primary-50 border border-primary-200 text-center';
-                const readyText = document.createElement('p');
-                readyText.className = 'text-sm text-slate-700 mb-3';
-                readyText.textContent = 'הקובץ מוכן: ' + (ready.fileName || 'קובץ שמע') + ' (זמין להורדה במשך 30 דקות)';
-                const readyLink = document.createElement('a');
-                readyLink.href = fileUrl;
-                readyLink.className = 'inline-block bg-primary-600 hover:bg-primary-700 text-white font-medium rounded-xl px-6 py-3 transition-colors';
-                readyLink.textContent = 'הורד את הקובץ';
-                readyBox.appendChild(readyText);
-                readyBox.appendChild(readyLink);
-                form.insertAdjacentElement('afterend', readyBox);
+            const readyBox = document.createElement('div');
+            readyBox.id = 'downloadReady';
+            readyBox.className = 'mt-6 p-4 rounded-xl bg-primary-50 border border-primary-200';
+            const readyTitle = document.createElement('p');
+            readyTitle.className = 'text-sm font-semibold text-primary-800 mb-2';
+            readyTitle.textContent = total > 1 ? `מוריד ${total} קישורים, אחד אחרי השני:` : 'מצב ההורדה:';
+            readyBox.appendChild(readyTitle);
+            form.insertAdjacentElement('afterend', readyBox);
 
-                // מנסה להתחיל את ההורדה אוטומטית; אם הדפדפן חוסם - הכפתור למעלה נשאר זמין
-                const a = document.createElement('a');
-                a.style.display = 'none';
-                a.href = fileUrl;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
+            const rows = links.map((link) => {
+                const row = document.createElement('div');
+                row.className = 'flex items-center justify-between gap-3 py-2 border-t border-primary-100 text-sm';
+                const name = document.createElement('span');
+                name.className = 'text-slate-700 truncate';
+                name.dir = 'auto';
+                name.textContent = link;
+                const state = document.createElement('span');
+                state.className = 'shrink-0 text-slate-500';
+                state.textContent = 'ממתין';
+                row.appendChild(name);
+                row.appendChild(state);
+                readyBox.appendChild(row);
+                return { row, name, state };
+            });
 
-                showToast("הקובץ מוכן! ההורדה מתחילה - אפשר לעקוב אחריה בסרגל ההורדות של הדפדפן.", 8000);
-                urlInput.value = '';
+            let okCount = 0;
+            const failedLinks = [];
 
-            } catch (error) {
-                console.error("שגיאה:", error);
-                if (error.userMessage) {
-                    showToast(error.userMessage, 6000, 'error');
-                } else {
-                    showToast("ההורדה נכשלה. ייתכן שהעוגיות פגו - נסה לעדכן אותן בקטע שלמטה.", 6000, 'error');
+            try {
+                for (let i = 0; i < total; i++) {
+                    const { row, name, state } = rows[i];
+                    state.textContent = 'בתהליך...';
+                    state.className = 'shrink-0 text-primary-600 font-medium';
+                    setBtnText(`${counter(i)}מעבד... נא להמתין בסבלנות`);
+
+                    try {
+                        const ready = await processLink(links[i], i);
+                        okCount++;
+
+                        // שלב 3: הורדה ישירה - הדפדפן מציג אותה בסרגל ההורדות עם אחוזים
+                        name.textContent = ready.fileName;
+                        const readyLink = document.createElement('a');
+                        readyLink.href = ready.fileUrl;
+                        readyLink.className = 'shrink-0 bg-primary-600 hover:bg-primary-700 text-white font-medium rounded-lg px-3 py-1.5 transition-colors';
+                        readyLink.textContent = 'הורד';
+                        row.replaceChild(readyLink, state);
+
+                        // מנסה להתחיל את ההורדה אוטומטית; אם הדפדפן חוסם - כפתור "הורד" נשאר זמין (30 דקות)
+                        const a = document.createElement('a');
+                        a.style.display = 'none';
+                        a.href = ready.fileUrl;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+
+                        // נותן לדפדפן רגע להתחיל את ההורדה לפני הקישור הבא
+                        if (i < total - 1) await sleep(2000);
+
+                    } catch (error) {
+                        console.error("שגיאה:", links[i], error);
+                        failedLinks.push(links[i]);
+                        state.textContent = error.userMessage || 'נכשל';
+                        state.className = 'shrink-0 text-rose-600 font-medium';
+                    }
                 }
+
+                // סיכום
+                if (failedLinks.length === 0) {
+                    showToast(total > 1
+                        ? `כל ${total} הקבצים מוכנים! אפשר לעקוב אחרי ההורדות בסרגל ההורדות של הדפדפן.`
+                        : "הקובץ מוכן! ההורדה מתחילה - אפשר לעקוב אחריה בסרגל ההורדות של הדפדפן.", 8000);
+                } else if (okCount > 0) {
+                    showToast(`${okCount} קבצים ירדו, ${failedLinks.length} נכשלו. הקישורים שנכשלו נשארו בתיבה לניסיון חוזר.`, 9000, 'error');
+                } else {
+                    showToast("ההורדה נכשלה. ייתכן שהעוגיות פגו - נסה לעדכן אותן בקטע שלמטה.", 7000, 'error');
+                }
+
+                // משאיר בתיבה רק את הקישורים שנכשלו
+                urlInput.value = failedLinks.join('\n');
+
             } finally {
                 urlInput.disabled = false;
                 emailInput.disabled = false; // הפעלת שדה האימייל מחדש
